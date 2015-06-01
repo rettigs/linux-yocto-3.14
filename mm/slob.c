@@ -104,12 +104,10 @@ static LIST_HEAD(free_slob_large);
 /*
  * Stores the minimum size freelist entry for best-fit allocation.
  */
-struct minblockinfo {
-	struct page *sp;
-	slob_t *prev, *cur, *next;
-	slobidx_t avail;
-	int units;
-};
+struct page *min_sp;
+slob_t *min_prev, *min_cur, *min_next;
+slobidx_t min_avail;
+int min_units;
 
 /*
  * slob_page_free: true for pages on free_slob_pages list.
@@ -229,9 +227,6 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 	slob_t *prev, *cur, *next, *aligned = NULL;
 	int delta = 0, units = SLOB_UNITS(size);
 
-	struct minblockinfo minblock;
-	minblock.avail = 0;
-
 	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
 		slobidx_t avail = slob_units(cur);
 
@@ -260,40 +255,18 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 					clear_slob_page_free(sp);
 				return cur;
 			} else { /* fragment */
-				if (minblock.avail == 0 || minblock.avail > units) {
-					minblock.sp = sp;
-					minblock.prev = prev;
-					minblock.cur = cur;
-					minblock.next = next;
-					minblock.avail = avail;
-					minblock.units = units;
+				if (min_avail == 0 || min_avail > units) {
+					min_sp = sp;
+					min_prev = prev;
+					min_cur = cur;
+					min_next = next;
+					min_avail = avail;
+					min_units = units;
 				}
 			}
 		}
 
-		if (minblock.avail == 0) {
-			return NULL;
-		} else {
-			sp = minblock.sp;
-			prev = minblock.prev;
-			cur = minblock.cur;
-			next = minblock.next;
-			avail = minblock.avail;
-			units = minblock.units;
-
-			if (prev)
-				set_slob(prev, slob_units(prev), cur + units);
-			else
-				sp->freelist = cur + units;
-			set_slob(cur + units, avail - units, next);
-
-			sp->units -= units;
-			if (!sp->units)
-				clear_slob_page_free(sp);
-			return cur;
-		}
-
-		if (slob_last(cur))
+		if (min_avail == 0 || slob_last(cur))
 			return NULL;
 	}
 }
@@ -308,6 +281,8 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 	struct list_head *slob_list;
 	slob_t *b = NULL;
 	unsigned long flags;
+
+	min_avail = 0;
 
 	if (size < SLOB_BREAK1)
 		slob_list = &free_slob_small;
@@ -346,6 +321,20 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 		break;
 	}
 	spin_unlock_irqrestore(&slob_lock, flags);
+
+	/* If we didn't find a perfect fit, use the best fit */
+	if (!b) {
+		if (min_prev)
+			set_slob(min_prev, slob_units(min_prev), min_cur + min_units);
+		else
+			min_sp->freelist = min_cur + min_units;
+		set_slob(min_cur + min_units, min_avail - min_units, min_next);
+
+		min_sp->units -= min_units;
+		if (!min_sp->units)
+			clear_slob_page_free(min_sp);
+		b = min_cur;
+	}
 
 	/* Not enough space: must allocate a new page */
 	if (!b) {
