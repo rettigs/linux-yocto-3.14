@@ -227,6 +227,8 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 	slob_t *prev, *cur, *next, *aligned = NULL;
 	int delta = 0, units = SLOB_UNITS(size);
 
+	min_diff = 0;
+
 	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
 		slobidx_t avail = slob_units(cur);
 
@@ -246,6 +248,7 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 
 			next = slob_next(cur);
 			if (avail == units) { /* exact fit? unlink. */
+				printk("SLOB: exact fit of size %d\n", avail);
 				if (prev)
 					set_slob(prev, slob_units(prev), next);
 				else
@@ -255,7 +258,8 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 					clear_slob_page_free(sp);
 				return cur;
 			} else { /* fragment */
-                slobidx_t diff = avail - units;
+				printk("SLOB: fragment; avail=%d, units=%d\n", avail, units);
+				slobidx_t diff = avail - units;
 				if (min_diff == 0 || min_diff > diff) {
 					min_sp = sp;
 					min_prev = prev;
@@ -267,10 +271,26 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 				}
 			}
 		}
-        if (slob_last(cur))
-            return NULL;
+		if (slob_last(cur))
+			break;
 	}
-    return NULL;
+
+	if (min_diff == 0) { // It doesn't fit anywhere
+		printk("SLOB: no fit\n");
+		return NULL;
+	} else { // We used the best fit
+		printk("SLOB: best fit was min_avail=%d, min_units=%d\n", min_avail, min_units);
+		if (min_prev)
+			set_slob(min_prev, slob_units(min_prev), min_cur + min_units);
+		else
+			min_sp->freelist = min_cur + min_units;
+		set_slob(min_cur + min_units, min_avail - min_units, min_next);
+
+		min_sp->units -= min_units;
+		if (!min_sp->units)
+			clear_slob_page_free(min_sp);
+		return min_cur;
+	}
 }
 
 /*
@@ -283,8 +303,6 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 	struct list_head *slob_list;
 	slob_t *b = NULL;
 	unsigned long flags;
-
-    min_diff = 0;
 
 	if (size < SLOB_BREAK1)
 		slob_list = &free_slob_small;
@@ -311,7 +329,7 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 		/* Attempt to alloc */
 		prev = sp->list.prev;
 		b = slob_page_alloc(sp, size, align);
-		if (!b) // If NULL, try again with the next page
+		if (!b)
 			continue;
 
 		/* Improve fragment distribution and reduce our average
@@ -324,37 +342,24 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 	}
 	spin_unlock_irqrestore(&slob_lock, flags);
 
-    /*
-	if (!b && min_diff > 0) { // If it's still NULL after going through all the pages, we never found a perfect match, so try to use the best fit
-        if (min_prev)
-            set_slob(min_prev, slob_units(min_prev), min_cur + min_units);
-        else
-            min_sp->freelist = min_cur + min_units;
-        set_slob(min_cur + min_units, min_avail - min_units, min_next);
+	/* Not enough space: must allocate a new page */
+	if (!b) {
+		b = slob_new_pages(gfp & ~__GFP_ZERO, 0, node);
+		if (!b)
+			return NULL;
+		sp = virt_to_page(b);
+		__SetPageSlab(sp);
 
-        min_sp->units -= min_units;
-        if (!min_sp->units)
-            clear_slob_page_free(min_sp);
-        b = min_cur;
-    }
-    */
-	if (!b) { // There was no fit, so allocate a new page
-        b = slob_new_pages(gfp & ~__GFP_ZERO, 0, node);
-        if (!b)
-            return NULL;
-        sp = virt_to_page(b);
-        __SetPageSlab(sp);
-
-        spin_lock_irqsave(&slob_lock, flags);
-        sp->units = SLOB_UNITS(PAGE_SIZE);
-        sp->freelist = b;
-        INIT_LIST_HEAD(&sp->list);
-        set_slob(b, SLOB_UNITS(PAGE_SIZE), b + SLOB_UNITS(PAGE_SIZE));
-        set_slob_page_free(sp, slob_list);
-        b = slob_page_alloc(sp, size, align);
-        BUG_ON(!b);
-        spin_unlock_irqrestore(&slob_lock, flags);
-    }
+		spin_lock_irqsave(&slob_lock, flags);
+		sp->units = SLOB_UNITS(PAGE_SIZE);
+		sp->freelist = b;
+		INIT_LIST_HEAD(&sp->list);
+		set_slob(b, SLOB_UNITS(PAGE_SIZE), b + SLOB_UNITS(PAGE_SIZE));
+		set_slob_page_free(sp, slob_list);
+		b = slob_page_alloc(sp, size, align);
+		BUG_ON(!b);
+		spin_unlock_irqrestore(&slob_lock, flags);
+	}
 	if (unlikely((gfp & __GFP_ZERO) && b))
 		memset(b, 0, size);
 	return b;
