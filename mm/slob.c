@@ -104,12 +104,10 @@ static LIST_HEAD(free_slob_large);
 /*
  * Stores the minimum size freelist entry for best-fit allocation.
  */
-struct minblockinfo {
-	struct page *sp;
-	slob_t *prev, *cur, *next;
-	slobidx_t avail;
-	int units;
-};
+struct page *min_sp;
+slob_t *min_prev, *min_cur, *min_next;
+slobidx_t min_avail;
+int min_units;
 
 /*
  * slob_page_free: true for pages on free_slob_pages list.
@@ -229,8 +227,7 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 	slob_t *prev, *cur, *next, *aligned = NULL;
 	int delta = 0, units = SLOB_UNITS(size);
 
-	struct minblockinfo minblock;
-	minblock.avail = 0;
+	min_avail = 0;
 
 	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
 		slobidx_t avail = slob_units(cur);
@@ -260,26 +257,26 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 					clear_slob_page_free(sp);
 				return cur;
 			} else { /* fragment */
-				if (minblock.avail == 0 || minblock.avail > units) {
-					minblock.sp = sp;
-					minblock.prev = prev;
-					minblock.cur = cur;
-					minblock.next = next;
-					minblock.avail = avail;
-					minblock.units = units;
+				if (min_avail == 0 || min_avail > units) {
+					min_sp = sp;
+					min_prev = prev;
+					min_cur = cur;
+					min_next = next;
+					min_avail = avail;
+					min_units = units;
 				}
 			}
 		}
 
-		if (minblock.avail == 0) {
+		if (min_avail == 0) {
 			return NULL;
 		} else {
-			sp = minblock.sp;
-			prev = minblock.prev;
-			cur = minblock.cur;
-			next = minblock.next;
-			avail = minblock.avail;
-			units = minblock.units;
+			sp = min_sp;
+			prev = min_prev;
+			cur = min_cur;
+			next = min_next;
+			avail = min_avail;
+			units = min_units;
 
 			if (prev)
 				set_slob(prev, slob_units(prev), cur + units);
