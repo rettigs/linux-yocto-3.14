@@ -275,13 +275,13 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 /*
  * Allocate a slob block within a given slob_page sp.
  */
-static void slob_page_alloc_best(struct page *sp, size_t size, int align, struct minblockinfo *minblockinfo)
+static void slob_page_alloc_best(struct page *sp, size_t size, int align, volatile struct minblockinfo *minblockinfo)
 {
 	slob_t *prev, *cur, *aligned = NULL;
-	int delta = 0, units = SLOB_UNITS(size);
+	volatile int delta = 0, units = SLOB_UNITS(size);
 
 	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
-		slobidx_t avail = slob_units(cur);
+		volatile slobidx_t avail = slob_units(cur);
 
 		if (align) {
 			aligned = (slob_t *)ALIGN((unsigned long)cur, align);
@@ -328,7 +328,7 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
     /*
      * Stores the minimum size freelist entry for best-fit allocation.
      */
-    struct minblockinfo minblockinfo;
+    volatile struct minblockinfo minblockinfo;
     minblockinfo.avail = 0;
 
 	if (size < SLOB_BREAK1)
@@ -356,6 +356,14 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 		/* Attempt to alloc */
 		prev = sp->list.prev;
 		slob_page_alloc_best(sp, size, align, &minblockinfo);
+
+        /* Improve fragment distribution and reduce our average
+         * search time by starting our next search here. (see
+         * Knuth vol 1, sec 2.5, pg 449) */
+        if (prev != slob_list->prev &&
+                slob_list->next != prev->next)
+            list_move_tail(slob_list, prev->next);
+        break;
 	}
 	spin_unlock_irqrestore(&slob_lock, flags);
 
