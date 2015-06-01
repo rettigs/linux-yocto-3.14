@@ -102,6 +102,16 @@ static LIST_HEAD(free_slob_medium);
 static LIST_HEAD(free_slob_large);
 
 /*
+ * Stores the minimum size freelist entry for best-fit allocation.
+ */
+struct minblockinfo {
+    struct page *sp;
+    slob_t *prev, *cur, *next;
+    slobidx_t avail;
+    int units;
+};
+
+/*
  * slob_page_free: true for pages on free_slob_pages list.
  */
 static inline int slob_page_free(struct page *sp)
@@ -248,7 +258,7 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 				if (prev)
 					set_slob(prev, slob_units(prev), cur + units);
 				else
-					sp->freelist = cur + units;
+					sp->freelist = cur + units; // Sean: Is this doing pointer arithmetic on a linked list?!
 				set_slob(cur + units, avail - units, next);
 			}
 
@@ -263,15 +273,63 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 }
 
 /*
+ * Allocate a slob block within a given slob_page sp.
+ */
+static void slob_page_alloc_best(struct page *sp, size_t size, int align, struct minblockinfo *minblockinfo)
+{
+	slob_t *prev, *cur, *aligned = NULL;
+	int delta = 0, units = SLOB_UNITS(size);
+
+	for (prev = NULL, cur = sp->freelist; ; prev = cur, cur = slob_next(cur)) {
+		slobidx_t avail = slob_units(cur);
+
+		if (align) {
+			aligned = (slob_t *)ALIGN((unsigned long)cur, align);
+			delta = aligned - cur;
+		}
+		if (avail >= units + delta) { /* room enough? */
+			slob_t *next;
+
+			if (delta) { /* need to fragment head to align? */
+				next = slob_next(cur);
+				set_slob(aligned, avail - delta, next);
+				set_slob(cur, delta, aligned);
+				prev = cur;
+				cur = aligned;
+				avail = slob_units(cur);
+			}
+
+			next = slob_next(cur);
+
+            if (minblockinfo->avail == 0 || avail < minblockinfo->avail) {
+                minblockinfo->sp = sp;
+                minblockinfo->prev = prev;
+                minblockinfo->cur = cur;
+                minblockinfo->next = next;
+                minblockinfo->avail = avail;
+                minblockinfo->units = units;
+            }
+		}
+	}
+}
+
+/*
  * slob_alloc: entry point into the slob allocator.
  */
 static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 {
+    printk("SLOB: slob_alloc\n");
 	struct page *sp;
 	struct list_head *prev;
 	struct list_head *slob_list;
 	slob_t *b = NULL;
 	unsigned long flags;
+
+    /*
+     * Stores the minimum size freelist entry for best-fit allocation.
+     */
+    struct minblockinfo minblockinfo;
+    minblockinfo.avail = 0;
 
 	if (size < SLOB_BREAK1)
 		slob_list = &free_slob_small;
@@ -297,22 +355,28 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 
 		/* Attempt to alloc */
 		prev = sp->list.prev;
-		b = slob_page_alloc(sp, size, align);
-		if (!b)
-			continue;
-
-		/* Improve fragment distribution and reduce our average
-		 * search time by starting our next search here. (see
-		 * Knuth vol 1, sec 2.5, pg 449) */
-		if (prev != slob_list->prev &&
-				slob_list->next != prev->next)
-			list_move_tail(slob_list, prev->next);
-		break;
+		slob_page_alloc_best(sp, size, align, &minblockinfo);
 	}
 	spin_unlock_irqrestore(&slob_lock, flags);
 
-	/* Not enough space: must allocate a new page */
-	if (!b) {
+	if (minblockinfo.avail > 0) { /* Found a minimum fit? Allocate at it. */
+        if (minblockinfo.avail == minblockinfo.units) { /* exact fit? unlink. */
+            if (minblockinfo.prev)
+                set_slob(minblockinfo.prev, slob_units(minblockinfo.prev), minblockinfo.next);
+            else
+                minblockinfo.sp->freelist = minblockinfo.next;
+        } else { /* fragment */
+            if (minblockinfo.prev)
+                set_slob(minblockinfo.prev, slob_units(minblockinfo.prev), minblockinfo.cur + minblockinfo.units);
+            else
+                minblockinfo.sp->freelist = minblockinfo.cur + minblockinfo.units; // Sean: Is this doing pointer arithmetic on a linked list?!
+            set_slob(minblockinfo.cur + minblockinfo.units, minblockinfo.avail - minblockinfo.units, minblockinfo.next);
+        }
+
+        minblockinfo.sp->units -= minblockinfo.units;
+        if (!minblockinfo.sp->units)
+            clear_slob_page_free(minblockinfo.sp);
+    } else { /* Not enough space: must allocate a new page */
 		b = slob_new_pages(gfp & ~__GFP_ZERO, 0, node);
 		if (!b)
 			return NULL;
