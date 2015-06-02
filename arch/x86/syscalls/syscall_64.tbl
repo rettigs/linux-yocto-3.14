@@ -322,6 +322,8 @@
 313	common	finit_module		sys_finit_module
 314	common	sched_setattr		sys_sched_setattr
 315	common	sched_getattr		sys_sched_getattr
+400	common	get_kmem_free		sys_get_kmem_free
+401	common	get_kmem_used		sys_get_kmem_used
 
 #
 # x32-specific system call numbers start at 512 to avoid cache impact

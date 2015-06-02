@@ -290,6 +290,8 @@ asmlinkage long sys_sched_getattr(pid_t pid,
 					struct sched_attr __user *attr,
 					unsigned int size,
 					unsigned int flags);
+asmlinkage long sys_get_kmem_free(void);
+asmlinkage long sys_get_kmem_used(void);
 asmlinkage long sys_sched_setaffinity(pid_t pid, unsigned int len,
 					unsigned long __user *user_mask_ptr);
 asmlinkage long sys_sched_getaffinity(pid_t pid, unsigned int len,
