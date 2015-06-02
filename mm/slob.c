@@ -73,6 +73,7 @@
 #include <linux/atomic.h>
 
 #include "slab.h"
+
 /*
  * slob_block has a field 'units', which indicates size of block if +ve,
  * or offset of next block if -ve (in SLOB_UNITs).
@@ -108,6 +109,12 @@ struct page *min_sp;
 slob_t *min_prev, *min_cur, *min_next;
 slobidx_t min_diff, min_avail;
 int min_units;
+
+/*
+ * Used to keep track of memory for fragmentation calculation.
+ */
+long kmem_free; // Number of holes in memory
+long kmem_used; // Number of allocated blocks of memory
 
 /*
  * slob_page_free: true for pages on free_slob_pages list.
@@ -248,7 +255,8 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 
 			next = slob_next(cur);
 			if (avail == units) { /* exact fit? unlink. */
-				printk("SLOB: exact fit of size %d\n", avail);
+				//printk("SLOB: exact fit of size %d\n", avail);
+				kmem_free -= 1;
 				if (prev)
 					set_slob(prev, slob_units(prev), next);
 				else
@@ -258,7 +266,7 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 					clear_slob_page_free(sp);
 				return cur;
 			} else { /* fragment */
-				printk("SLOB: fragment; avail=%d, units=%d\n", avail, units);
+				//printk("SLOB: fragment; avail=%d, units=%d\n", avail, units);
 				slobidx_t diff = avail - units;
 				if (min_diff == 0 || min_diff > diff) {
 					min_sp = sp;
@@ -276,10 +284,10 @@ static void *slob_page_alloc(struct page *sp, size_t size, int align)
 	}
 
 	if (min_diff == 0) { // It doesn't fit anywhere
-		printk("SLOB: no fit\n");
+		//printk("SLOB: no fit\n");
 		return NULL;
 	} else { // We used the best fit
-		printk("SLOB: best fit was min_avail=%d, min_units=%d\n", min_avail, min_units);
+		//printk("SLOB: best fit was min_avail=%d, min_units=%d\n", min_avail, min_units);
 		if (min_prev)
 			set_slob(min_prev, slob_units(min_prev), min_cur + min_units);
 		else
@@ -347,6 +355,8 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 		b = slob_new_pages(gfp & ~__GFP_ZERO, 0, node);
 		if (!b)
 			return NULL;
+		else
+			kmem_used += SLOB_UNITS(PAGE_SIZE);
 		sp = virt_to_page(b);
 		__SetPageSlab(sp);
 
@@ -390,6 +400,7 @@ static void slob_free(void *block, int size)
 		if (slob_page_free(sp))
 			clear_slob_page_free(sp);
 		spin_unlock_irqrestore(&slob_lock, flags);
+		kmem_used -= SLOB_UNITS(PAGE_SIZE);
 		__ClearPageSlab(sp);
 		page_mapcount_reset(sp);
 		slob_free_pages(b, 0);
@@ -410,6 +421,7 @@ static void slob_free(void *block, int size)
 		else
 			slob_list = &free_slob_large;
 		set_slob_page_free(sp, slob_list);
+		kmem_free += 1;
 		goto out;
 	}
 
@@ -437,14 +449,17 @@ static void slob_free(void *block, int size)
 		if (!slob_last(prev) && b + units == next) {
 			units += slob_units(next);
 			set_slob(b, units, slob_next(next));
-		} else
+		} else {
 			set_slob(b, units, next);
+		}
 
 		if (prev + slob_units(prev) == b) {
 			units = slob_units(b) + slob_units(prev);
 			set_slob(prev, units, slob_next(b));
-		} else
+		} else {
 			set_slob(prev, slob_units(prev), b);
+			kmem_free += 1;
+		}
 	}
 out:
 	spin_unlock_irqrestore(&slob_lock, flags);
@@ -674,3 +689,15 @@ void __init kmem_cache_init_late(void)
 {
 	slab_state = FULL;
 }
+
+long get_kmem_free(void)
+{
+	return kmem_free;
+}
+EXPORT_SYMBOL(get_kmem_free);
+
+long get_kmem_used(void)
+{
+	return kmem_used;
+}
+EXPORT_SYMBOL(get_kmem_used);

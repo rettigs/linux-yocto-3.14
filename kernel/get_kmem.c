@@ -3,16 +3,20 @@
 #include <linux/sched.h>
 #include <linux/syscalls.h>
 
+/*
+ * Returns the number of holes in memory.
+ */
 SYSCALL_DEFINE0(get_kmem_free)
 {
-    long int free = 37L;
-    printk("sys_get_kmem_free: %ld\n", free);
-	return free;
+	extern long get_kmem_free(void);
+	return get_kmem_free();
 }
 
-SYSCALL_DEFINE0 (get_kmem_used)
+/*
+ * Returns the number of allocated blocks of memory.
+ */
+SYSCALL_DEFINE0(get_kmem_used)
 {
-    long used = (long) 42L;
-    printk("sys_get_kmem_used: %ld\n", used);
-	return used;
+	extern long get_kmem_used(void);
+	return get_kmem_used();
 }
